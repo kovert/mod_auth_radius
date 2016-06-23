@@ -80,10 +80,10 @@
 #define RADLOG_WARN(srv, fmt, ...) ap_log_error(APLOG_MARK, APLOG_NOERRNO | APLOG_WARNING, 0, srv, fmt,  ## __VA_ARGS__)
 
 #define radcpy(STRING, ATTR) do { \
-                  uint8_t len = ATTR->length; \
-                  if (len >= 2) len-=2; \
-                  memcpy(STRING, ATTR->data, len); \
-                  (STRING)[len] = 0;} while (0)
+	              uint8_t len = ATTR->length; \
+	              if (len >= 2) len-=2; \
+	              memcpy(STRING, ATTR->data, len); \
+	              (STRING)[len] = 0;} while (0)
 
 /*
   RFC 2138 says that this port number is wrong, but everyone's using it.
@@ -124,12 +124,15 @@ typedef struct radius_packet_t {
 #define RADIUS_SERVICE_TYPE           6
 #define RADIUS_REPLY_MESSAGE          18
 #define RADIUS_STATE                  24
+#define RADIUS_CLASS                  25
 #define RADIUS_SESSION_TIMEOUT        27
 #define RADIUS_CALLING_STATION_ID     31
 #define RADIUS_NAS_IDENTIFIER         32
 
 /* service types : authenticate only for now */
 #define RADIUS_AUTHENTICATE_ONLY      8
+
+#define RADIUS_AUTHORIZE_ONLY      17
 
 /* How large the packets may be */
 #define RADIUS_PACKET_RECV_SIZE       1024
@@ -145,7 +148,8 @@ typedef struct radius_packet_t {
 #endif
 
 /* Add a cookie to an outgoing request */
-static const char *cookie_name = "RADIUS";
+static const char *authn_cookie_name = "RADIUS";
+static const char *authz_cookie_name = "RADIUSZ";
 
 #define COOKIE_SIZE                   1024
 
@@ -264,6 +268,22 @@ static void random_vector_get(uint8_t *vector)
 	apr_md5_final(vector, &my_md5);          /* set the final vector */
 }
 
+typedef struct radius_class_list {
+	char *class;
+	struct radius_class_list *next;
+} radius_class_list_t;
+
+typedef struct radius_perreq_notes {
+	int	response;
+	struct radius_class_list *classes;
+} radius_perreq_notes_t;
+
+typedef struct radius_fixup_redirect {
+	char *class;
+	char *redirect;
+	struct radius_fixup_redirect *next;
+} radius_fixup_redirect_t;
+
 /* Per-dir configuration structure */
 typedef struct radius_dir_config_rec {
 	radius_server_config_rec_t *server;
@@ -272,9 +292,12 @@ typedef struct radius_dir_config_rec {
 	int authoritative;
 	/* is RADIUS authentication authoritative? */
 	int timeout;
+	/* for authz only -- state for use in authz_requests */
+	char *authz_state;
 	/* cookie time valid */
 	char *calling_station_id; /* custom value for specifying hardcoded calling station ID */
 	int debug_mode;   /* Dump all data talked with Radius */
+	radius_fixup_redirect_t *redirects;
 } radius_dir_config_rec_t;
 
 /* Per-dir configuration create */
@@ -286,10 +309,13 @@ static void *radius_per_directory_config_alloc(apr_pool_t *p, char *d)
 
 	rec->server = NULL;             /* no valid server by default */
 	rec->active = 1;                /* active by default */
+	rec->authz_state = NULL;            /* authn by default */
 	rec->authoritative = 1;         /* authoritative by default */
 	rec->timeout = 0;               /* let the server config decide timeouts */
 	rec->calling_station_id = NULL; /* no custom value for calling station ID yet ; use default behavior */
 	rec->debug_mode = FALSE;
+
+	rec->redirects = NULL;
 
 	return rec;
 }
@@ -325,11 +351,44 @@ static void *radius_per_directory_config_merge(apr_pool_t *p,
 	}
 
 	merged_config->active = new_config->active;
+	merged_config->authz_state = new_config->authz_state;
+	merged_config->redirects = new_config->redirects;
 	merged_config->authoritative = new_config->authoritative;
 	merged_config->timeout = new_config->timeout;
 	merged_config->debug_mode = new_config->debug_mode;
 
 	return (void *)merged_config;
+}
+
+/* AuthRadiusClassRedirect: setup redirects for fixup phase */
+static const char *radius_class_redirect_add(
+	cmd_parms *cmd,
+	void *mconfig,
+	const char *class,
+	const char *redirect)
+{
+	radius_fixup_redirect_t *r, *t;
+	radius_dir_config_rec_t *rec;
+
+	rec = (radius_dir_config_rec_t *)mconfig;
+
+	r = apr_pcalloc(cmd->pool, sizeof(radius_fixup_redirect_t));
+
+	r->class = apr_pstrdup(cmd->pool, class);
+	r->redirect = apr_pstrdup(cmd->pool, redirect);
+	r->next = NULL;
+
+	if(rec->redirects) {
+		t = rec->redirects;
+		while(t->next) {
+			t = t->next;
+		}
+		t->next = r;
+	} else {
+		rec->redirects = r;
+	}
+
+	return NULL;
 }
 
 /* AddRadiusAuth: per-server set configuration */
@@ -439,9 +498,16 @@ static command_rec auth_cmds[] = {
 		     (void *)APR_OFFSETOF(radius_dir_config_rec_t, active), OR_AUTHCFG,
 		     "per-directory toggle the use of RADIUS authentication."),
 
+	AP_INIT_TAKE1("AuthRadiusAuthorizationOnlyState", ap_set_string_slot,
+		     (void *)APR_OFFSETOF(radius_dir_config_rec_t, authz_state), OR_AUTHCFG,
+		     "per-directory RADIUS State setting for use in non-standard RADIUS Authorization-Only"),
+
 	AP_INIT_FLAG("AuthRadiusDebug", ap_set_flag_slot,
 		      (void *)APR_OFFSETOF(radius_dir_config_rec_t, debug_mode), OR_AUTHCFG,
 		      "Set to 'on' to enable the debug mode, all data talked will be displayed - defaults to off."),
+
+	AP_INIT_TAKE2("AuthRadiusClassRedirect", radius_class_redirect_add, NULL, OR_AUTHCFG,
+		       "Define redirects if a user has given values in class set"),
 
 	{ NULL }
 };
@@ -516,6 +582,13 @@ static char *cookie_alloc(request_rec *r,
 	radius_dir_config_rec_t *rec;
 	const char *hostname;
 
+	/*
+	 * authz cookie
+	 */
+	if(!passwd) {
+		passwd = "--unset--";
+	}
+
 	cookie = apr_pcalloc(r->pool, COOKIE_SIZE);
 	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_auth_module);
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
@@ -589,6 +662,10 @@ static char *cookie_alloc(request_rec *r,
 	return cookie;
 }
 
+/*
+ * if passwd is NULL, then its an authz cookie, in which case the passwd can be
+ * null
+ */
 static int cookie_validate(request_rec *r,
 			   const char *cookie,
 			   const char *passwd)
@@ -610,6 +687,7 @@ static int cookie_validate(request_rec *r,
 
 static void cookie_add(request_rec *r,
 		       apr_table_t *header,
+			   const char *cookie_name,
 		       char *cookie,
 		       time_t expires)
 {
@@ -632,7 +710,7 @@ static void cookie_add(request_rec *r,
 }
 
 /* Spot a cookie in an incoming request */
-static char *cookie_from_request(request_rec *r)
+static char *cookie_from_request(request_rec *r, const char *cookie_name)
 {
 	const char *cookie;
 	char *value;
@@ -664,6 +742,34 @@ static char *cookie_from_request(request_rec *r)
 	return NULL; /* no cookie was found */
 }
 
+static void radius_squirrel_classes(request_rec *r, 
+	radius_packet_t *packet,
+	radius_perreq_notes_t *pnote)
+{
+	radius_class_list_t *newcl, *cl;
+
+	/* some overlap from attribute_find_by_num */
+	attribute_t *attr = &packet->first;
+	int len = ntohs(packet->length) - RADIUS_HEADER_LEN;
+	do {
+		if (attr->length < 2)
+			continue;
+		if ((len -= attr->length) <= 0)
+			break;
+		newcl = apr_pcalloc(r->pool, attr->length + 10);
+		newcl->class = apr_pstrndup(r->pool, (char *)attr->data, attr->length - 2);
+		newcl->next = NULL;
+		if(pnote->classes) {
+			cl->next = newcl;
+		} else {
+			pnote->classes = newcl;
+		}
+		cl = newcl;
+		attr = (attribute_t *)((char *)attr + attr->length);
+	} while(len > 0);
+}
+
+
 /* There's a lot of parameters to this function, but it does a lot of work */
 static int radius_authenticate(request_rec *r,
 			       radius_server_config_rec_t *scr,
@@ -685,6 +791,7 @@ static int radius_authenticate(request_rec *r,
 	struct timeval tv;
 	int rcode = -1;
 	struct in_addr *ip_addr;
+	radius_perreq_notes_t *pnote;
 
 	uint8_t misc[RADIUS_RANDOM_VECTOR_LEN];
 	int password_len, i;
@@ -697,17 +804,20 @@ static int radius_authenticate(request_rec *r,
 	radius_dir_config_rec_t *rec;
 
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
-	i = strlen(passwd_in);
-	password_len = (i + 0x0f) & 0xfffffff0; /* round off to 16 */
-	if (password_len == 0) {
-		password_len = 16;        /* it's at least 15 bytes long */
-	} else if (password_len > 128) { /* password too long, from RFC2138, p.22 */
-		RADLOG_DEBUG(r->server, "password given by user %s is too long for RADIUS", user);
-		return FALSE;
-	}
 
-	memset(password, 0, password_len);
-	memcpy(password, passwd_in, i); /* don't use strcpy! */
+	if(passwd_in) {
+		i = strlen(passwd_in);
+		password_len = (i + 0x0f) & 0xfffffff0; /* round off to 16 */
+		if (password_len == 0) {
+			password_len = 16;        /* it's at least 15 bytes long */
+		} else if (password_len > 128) { /* password too long, from RFC2138, p.22 */
+			RADLOG_DEBUG(r->server, "password given by user %s is too long for RADIUS", user);
+			return FALSE;
+		}
+
+		memset(password, 0, password_len);
+		memcpy(password, passwd_in, i); /* don't use strcpy! */
+	}
 
 	/* generate a random authentication vector */
 	random_vector_get(vector);
@@ -730,19 +840,24 @@ static int radius_authenticate(request_rec *r,
 	my_md5 = md5_secret;        /* so we won't re-do the hash later */
 	apr_md5_update(&my_md5, vector, RADIUS_RANDOM_VECTOR_LEN);
 	apr_md5_final(misc, &my_md5);      /* set the final vector */
-	xor(password, misc, RADIUS_PASSWORD_LEN);
 
-	/* For each step through, e[i] = p[i] ^ MD5(secret + e[i-1]) */
-	for (i = 1; i < (password_len >> 4); i++) {
-		my_md5 = md5_secret;    /* grab old value of the hash */
-		apr_md5_update(&my_md5, &password[(i - 1) * RADIUS_PASSWORD_LEN], RADIUS_PASSWORD_LEN);
-		apr_md5_final(misc, &my_md5);      /* set the final vector */
-		xor(&password[i * RADIUS_PASSWORD_LEN], misc, RADIUS_PASSWORD_LEN);
+	if(passwd_in) {
+		xor(password, misc, RADIUS_PASSWORD_LEN);
+
+		/* For each step through, e[i] = p[i] ^ MD5(secret + e[i-1]) */
+		for (i = 1; i < (password_len >> 4); i++) {
+			my_md5 = md5_secret;    /* grab old value of the hash */
+			apr_md5_update(&my_md5, &password[(i - 1) * RADIUS_PASSWORD_LEN], RADIUS_PASSWORD_LEN);
+			apr_md5_final(misc, &my_md5);      /* set the final vector */
+			xor(&password[i * RADIUS_PASSWORD_LEN], misc, RADIUS_PASSWORD_LEN);
+		}
+		attribute_add(packet, RADIUS_PASSWORD, password, password_len);
+
+		/* Tell the RADIUS server that we only want to authenticate */
+		service = htonl(RADIUS_AUTHENTICATE_ONLY);
+	} else {
+		service = htonl(RADIUS_AUTHORIZE_ONLY);
 	}
-	attribute_add(packet, RADIUS_PASSWORD, password, password_len);
-
-	/* Tell the RADIUS server that we only want to authenticate */
-	service = htonl(RADIUS_AUTHENTICATE_ONLY);
 	attribute_add(packet, RADIUS_SERVICE_TYPE, (uint8_t *)&service,
 		      sizeof(service));
 
@@ -857,7 +972,7 @@ static int radius_authenticate(request_rec *r,
 
 	/* Check if we've got everything OK.  We should also check packet->id...*/
 	if (packet_verify(r, packet, vector)) {
-		RADLOG_DEBUG(r->server, "RADIUS packet fails verification");
+		RADLOG_WARN(r->server, "RADIUS packet fails verification");
 		return FALSE;
 	}
 
@@ -882,29 +997,19 @@ static attribute_t *attribute_find_by_num(radius_packet_t *packet, uint8_t type)
 	return attr;
 }
 
-/* authentication module utility functions */
-static int password_check(request_rec *r,
-			  radius_server_config_rec_t *scr,
-			  const char *user,
-			  const char *passwd_in,
-			  const char *state,
-			  char *message,
-			  char *errstr)
+static int radius_setupsocket(request_rec *r, 
+	radius_server_config_rec_t *scr,
+	const char *user)
 {
 	struct sockaddr_in *sin;
 	struct sockaddr salocal;
-	int sockfd;
 	uint16_t local_port;
-	uint8_t vector[RADIUS_RANDOM_VECTOR_LEN];
-	uint8_t recv_buffer[RADIUS_PACKET_RECV_SIZE];
-	radius_packet_t *packet;
-
-	int rcode;
+	int sockfd = -1;
 
 	/* connect to a port */
 	if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
 		RADLOG_DEBUG(r->server, "error opening RADIUS socket for user %s: %s", user, strerror(errno));
-		return FALSE;
+		return -1;
 	}
 
 	sin = (struct sockaddr_in *)&salocal;
@@ -921,9 +1026,32 @@ static int password_check(request_rec *r,
 	if (local_port >= 64000) {
 		close(sockfd);
 		RADLOG_DEBUG(r->server, "cannot bind to RADIUS socket for user %s", user);
+		return -1;
+	}
+	return (sockfd);
+}
+
+/* authentication module utility functions */
+static int password_check(request_rec *r,
+			  radius_server_config_rec_t *scr,
+			  const char *user,
+			  const char *passwd_in,
+			  const char *state,
+			  char *message,
+			  char *errstr)
+{
+	int sockfd;
+	uint8_t vector[RADIUS_RANDOM_VECTOR_LEN];
+	uint8_t recv_buffer[RADIUS_PACKET_RECV_SIZE];
+	radius_packet_t *packet;
+	radius_perreq_notes_t *pnote;
+
+	sockfd = radius_setupsocket(r, scr, user);
+	if(sockfd == -1) {
 		return FALSE;
 	}
 
+	int rcode;
 	rcode = radius_authenticate(r, scr, sockfd,
 				    RADIUS_ACCESS_REQUEST, (char *)recv_buffer, user, passwd_in, state, vector, errstr);
 
@@ -944,9 +1072,21 @@ static int password_check(request_rec *r,
 			i = ntohl(i);
 		}
 
-		*message = 0;  /* no message */
-		return TRUE;   /* he likes you! */
-	}
+			/*
+		 	 * used for future authz calls; its not done earlier because
+			 * it does not do password auth.
+		 	 */
+			pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+			if(!pnote) {
+				pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+				radius_squirrel_classes(r, packet, pnote);
+				pnote->response = TRUE;
+				ap_set_module_config(r->request_config, &radius_auth_module, pnote);
+			}
+
+			*message = 0;  /* no message */
+			return TRUE;   /* he likes you! */
+		}
 
 	case RADIUS_ACCESS_REJECT:
 		RADLOG_DEBUG(r->server, "RADIUS authentication failed for user %s", user);
@@ -985,7 +1125,7 @@ static int password_check(request_rec *r,
 		}
 
 		/* set the magic cookie */
-		cookie_add(r, r->err_headers_out, cookie_alloc(r, expires, "", server_state), expires);
+		cookie_add(r, r->err_headers_out, authn_cookie_name, cookie_alloc(r, expires, "", server_state), expires);
 
 		/* log the challenge, as it IS an error returned to the user */
 		RADLOG_DEBUG(r->server, "RADIUS server requested challenge for user %s", user);
@@ -1001,6 +1141,115 @@ static int password_check(request_rec *r,
 	return FALSE; /* default to failing authentication */
 }
 
+/* authz_state module utility function; this is not exactly to spec */
+static int authorize_only_check(request_rec *r,
+			  radius_server_config_rec_t *scr,
+			  const char *user,
+			  char *message,
+			  char *errstr)
+{
+	int sockfd;
+	uint8_t vector[RADIUS_RANDOM_VECTOR_LEN];
+	uint8_t recv_buffer[RADIUS_PACKET_RECV_SIZE];
+	radius_packet_t *packet;
+	radius_fixup_redirect_t *rd;
+	radius_dir_config_rec_t *rec;
+	radius_perreq_notes_t *pnote;
+	int rv = FALSE;
+	char *cookie;
+
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+
+	/* check for the existence of a cookie: assume authorized if so */
+	if ((cookie = cookie_from_request(r, authz_cookie_name)) != NULL) {
+		RADLOG_DEBUG(r->server, "Found cookie=%s for user=%s : ", cookie, r->user);
+
+		if (cookie_validate(r, cookie, NULL)) {
+			RADLOG_DEBUG(r->server, "still valid.  Serving page.");
+			return TRUE;
+		}
+	} else {
+		RADLOG_DEBUG(r->server, "No cookie found.  Trying RADIUS authentication.");
+	}
+
+
+	if(pnote) {
+		return pnote->response;
+	}
+
+	sockfd = radius_setupsocket(r, scr, user);
+	if(sockfd == -1) {
+		ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "Unable to establish socket to radius server to authorize %s: %s", r->user, strerror(errno));
+		return FALSE;
+	}
+
+	int rcode;
+	rcode = radius_authenticate(r, scr, sockfd,
+				    RADIUS_ACCESS_REQUEST, (char *)recv_buffer, user, NULL, rec->authz_state, vector, errstr);
+
+	close(sockfd); /* we're done with it */
+
+	if (rcode == FALSE) {
+		ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "Unable to get response from radius for %s: %s", r->user, strerror(errno)); 
+		return FALSE;        /* error out */
+	}
+
+	packet = (radius_packet_t *)recv_buffer;
+	if (rcode == FALSE)  {
+		ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, "Incomplete packet from radius for %s: %s", r->user, strerror(errno)); 
+		return FALSE;        /* error out */
+	}
+
+	/* we got this far, we'll need the pnote */
+	pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+
+	switch (packet->code) {
+	case RADIUS_ACCESS_ACCEPT: {
+		radius_squirrel_classes(r, packet, pnote);
+		*message = 0;  /* no message */
+		rv = TRUE;   /* he likes you! */
+	}
+
+	case RADIUS_ACCESS_REJECT:
+		RADLOG_DEBUG(r->server, "RADIUS authentication failed for user %s", user);
+		break;
+
+	case RADIUS_ACCESS_CHALLENGE: 
+		RADLOG_DEBUG(r->server, "RADIUS challenge received for %s; not authorizing", user);
+		break;
+
+	default: /* don't know what else to do */
+		RADLOG_DEBUG(r->server, "RADIUS server returned unknown response %02x",
+			     packet->code);
+		break;
+	}
+
+
+	pnote->response = rv;
+	ap_set_module_config(r->request_config, &radius_auth_module, pnote);
+
+	if(rv == TRUE ) {
+		time_t expires;
+		int min;
+		min = scr->timeout;      /* the server config is authoritative */
+
+		expires = time(NULL) + (min * 60);
+		cookie = cookie_alloc(r, expires, NULL, NULL);
+
+		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes",
+		     	r->user, NULL, min);
+	
+		RADLOG_DEBUG(r->server, "Adding %s cookie %s", authz_cookie_name, cookie);
+
+		cookie_add(r, r->headers_out, authz_cookie_name, cookie, expires);
+	}
+
+	
+	return rv;
+}
+
+
 void challenge_auth_failure(request_rec *r,
 			    char *user,
 			    char *message)
@@ -1008,7 +1257,7 @@ void challenge_auth_failure(request_rec *r,
 	if (!*message) { /* no message to print */
 		/* note_basic_auth_failure(r); */
 		apr_table_set(r->err_headers_out, "WWW-Authenticate",
-                              apr_psprintf(r->pool, "Basic realm=\"%s\"", ap_auth_name(r)));
+	                          apr_psprintf(r->pool, "Basic realm=\"%s\"", ap_auth_name(r)));
 	} else {            /* print our magic message */
 		apr_table_set(r->err_headers_out, "WWW-Authenticate",
 			      apr_pstrcat(r->pool, "Basic realm=\"", ap_auth_name(r), " for ", user, " '", message, "'",
@@ -1066,7 +1315,7 @@ int basic_authentication_common(request_rec *r,
 		     r->server->server_hostname, r->uri, r->filename);
 
 	/* check for the existence of a cookie: do weak authentication if so */
-	if ((cookie = cookie_from_request(r)) != NULL) {
+	if ((cookie = cookie_from_request(r, authn_cookie_name)) != NULL) {
 		RADLOG_DEBUG(r->server, "Found cookie=%s for user=%s : ", cookie, r->user);
 
 		/* are we in a Challenge-Response intermediate state? */
@@ -1078,7 +1327,7 @@ int basic_authentication_common(request_rec *r,
 			 * If authentication succeeds, the new cookie will supersede the old.
 			 * (RFC 2109, 4.3.3)
 			 */
-			cookie_add(r, r->err_headers_out, cookie, 0);
+			cookie_add(r, r->err_headers_out, authn_cookie_name, cookie, 0);
 			state += sizeof(APACHE_RADIUS_MAGIC_STATE) - 1; /* skip state string */
 
 			/* valid username, passwd, and expiry date: don't do RADIUS */
@@ -1087,7 +1336,7 @@ int basic_authentication_common(request_rec *r,
 			return OK;
 		} else {            /* the cookie has probably expired */
 			/* don't bother logging the fact: we probably don't care */
-			cookie_add(r, r->err_headers_out, cookie, 0);
+			cookie_add(r, r->err_headers_out, authn_cookie_name, cookie, 0);
 			challenge_auth_failure(r, r->user, message);
 			RADLOG_DEBUG(r->server, "Invalid or expired. telling browser to delete cookie");
 			return HTTP_UNAUTHORIZED;
@@ -1136,9 +1385,9 @@ int basic_authentication_common(request_rec *r,
 	RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes",
 		     r->user, sent_pw, min);
 
-	RADLOG_DEBUG(r->server, "Adding cookie %s", cookie);
+	RADLOG_DEBUG(r->server, "Adding %s cookie %s", authn_cookie_name, cookie);
 
-	cookie_add(r, r->headers_out, cookie, expires);
+	cookie_add(r, r->headers_out, authn_cookie_name, cookie, expires);
 
 	return OK;
 }
@@ -1178,8 +1427,94 @@ static int basic_auth(request_rec *r)
 	return basic_authentication_common(r, r->user, sent_pw);
 }
 
+/* Apache 2.1+ */
+static authz_status radius_authz(request_rec *r, const char *require_line, const void *parsed_require_line)
+{
+	radius_server_config_rec_t *scr;
+	radius_dir_config_rec_t *rec;
+	char errstr[MAX_STRING_LEN];
+	char message[256];
+
+	if(!r->user) {
+		return AUTHZ_DENIED_NO_USER;
+	}
+
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	if(!rec->authz_state) {
+		return DECLINED;
+	}
+
+	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_auth_module);
+	if(authorize_only_check(r, scr, r->user, message, errstr) == TRUE) {
+		return AUTHZ_GRANTED;
+	} else {
+		return AUTHZ_DENIED;
+	}
+}
+
+static void check_redirect_classes(request_rec *r) {
+	radius_dir_config_rec_t *rec;
+	radius_perreq_notes_t *pnote;
+	radius_class_list_t *class;
+	radius_fixup_redirect_t *redir;
+
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+
+	if(!rec) {
+		return;
+	}
+
+	if(!pnote) {
+		return;
+	}
+
+	for(redir = rec->redirects; redir; redir = redir->next) {
+		for(class = pnote->classes; class; class = class->next) {
+			if(strcmp(class->class, redir->class) == 0) {
+				apr_table_set(r->headers_out, "Location", redir->redirect);
+				r->status = HTTP_TEMPORARY_REDIRECT;
+				goto done;
+			}
+		}
+	}
+
+done:
+	return;
+}
+
+static apr_status_t radius_fixups(request_rec *r) {
+	radius_dir_config_rec_t *rec;
+	radius_server_config_rec_t *scr;
+	char errstr[MAX_STRING_LEN];
+	char message[256];
+
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+
+	if(! r->user) {
+		return DECLINED;
+	}
+
+	if(! rec->authz_state) {
+		return DECLINED;
+	}
+
+	message[0] = '\0';
+	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_auth_module);
+	authorize_only_check(r, scr, r->user, message, errstr);
+
+	check_redirect_classes(r);
+
+	return OK;
+}
+
 static const authn_provider radius_authentication_provider = {
 	&basic_auth_2_1,
+	NULL
+};
+
+static const authz_provider radius_authorization_provider = {
+	&radius_authz,
 	NULL
 };
 
@@ -1193,9 +1528,9 @@ static const authn_provider radius_authentication_provider = {
  * [jpereira@jpereira-desktop mod_auth_radius.git]$
  */
 static int radius_hook_init(apr_pool_t *pconf,
-                            apr_pool_t *mp_log,
-                            apr_pool_t *mp_temp,
-                            server_rec *s) {
+	                        apr_pool_t *mp_log,
+	                        apr_pool_t *mp_temp,
+	                        server_rec *s) {
 	char package[48]; /* e.g: mod_auth_radius/<version>[-git-<crc>] */
 
 	/* Setup module version information. */
@@ -1215,8 +1550,9 @@ static void register_hooks(apr_pool_t *p)
 	static const char *const aszPost[] = { "mod_authz_user.c", NULL };
 
 	ap_register_provider(p, AUTHN_PROVIDER_GROUP, "radius", "0", &radius_authentication_provider);
+	ap_register_provider(p, AUTHZ_PROVIDER_GROUP, "radius", "0", &radius_authorization_provider);
 
-	ap_hook_post_config(radius_hook_init, NULL, NULL, APR_HOOK_MIDDLE);
+	ap_hook_fixups(radius_fixups, NULL, NULL, APR_HOOK_FIRST);
 
 #ifdef AP_AUTH_INTERNAL_PER_CONF
 	ap_hook_check_access(basic_auth,

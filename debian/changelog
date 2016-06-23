@@ -1,8 +1,15 @@
+libapache2-mod-auth-radius (1.6.1+git+kovert0) unstable; urgency=medium
+
+  * add authz support
+
+ -- Todd Kover <kovert@omniscient.com>  Mon, 27 Jun 2016 16:42:00 -0400
+
 libapache2-mod-auth-radius (1.6.1+git) unstable; urgency=medium
 
   * New upstream version.
 
  -- Jorge Pereira <jpereiran@gmail.com>  Wed, 23 Nov 2015 15:30:11 -0300
+
 
 libapache2-mod-auth-radius (1.6.0+git) vivid; urgency=medium
 
