@@ -2,11 +2,8 @@
 #export DH_VERBOSE=1
 tmp := $(CURDIR)/debian/libapache2-mod-auth-radius
 
-build: patch build-stamp
-
-build-stamp:
-	dh_testdir
-	make
+%:
+	dh $@
 
 patch:
 #	if [ ! -f patch-stamp ]; then \
@@ -20,42 +17,14 @@ unpatch:
 #	 rm -f patch-stamp; \
 #	fi
 
-clean: unpatch real-clean
-real-clean:
-	dh_testdir
-	dh_testroot
-	$(MAKE) clean
-	dh_clean .libs/mod_auth_radius.so
-
-install: build
-	dh_testdir
-	dh_testroot
-	dh_prep
-	dh_installdirs
+override_dh_auto_install:
+	#dh_testdir
+	#dh_testroot
+	#dh_prep
+	#dh_installdirs
 	# NFC why I need to do this.
 	mkdir -p $(tmp)/usr/lib/apache2/modules $(tmp)/etc/apache2/mods-available
 	cp -a debian/auth_radius.load $(tmp)/etc/apache2/mods-available/authnz_radius.load
 	install -p -m 644 .libs/mod_auth_radius.so $(tmp)/usr/lib/apache2/modules/mod_authnz_radius.so
 
-binary-indep:
-	#nothing to do
-
-# Build architecture-dependent files here.
-binary-arch: build install
-	dh_testdir
-	dh_testroot
-	dh_installchangelogs ChangeLog
-	dh_installdocs README.asciidoc
-	dh_installexamples htaccess httpd.conf
-	dh_strip
-	dh_compress 
-	dh_fixperms
-	dh_installdeb
-	dh_shlibdeps
-	dh_gencontrol
-	dh_md5sums
-	dh_builddeb
-
-binary: binary-indep binary-arch 
-.PHONY: build clean binary-arch binary-indep binary install patch unpatch
 
