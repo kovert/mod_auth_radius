@@ -33,7 +33,7 @@ install: build
 	dh_prep
 	dh_installdirs
 	# NFC why I need to do this.
-	mkdir -p (tmp)/usr/lib/apache2/modules $(tmp)/etc/apache2/mods-available
+	mkdir -p $(tmp)/usr/lib/apache2/modules $(tmp)/etc/apache2/mods-available
 	cp -a debian/auth_radius.load $(tmp)/etc/apache2/mods-available/authnz_radius.load
 	install -p -m 644 .libs/mod_auth_radius.so $(tmp)/usr/lib/apache2/modules/mod_authnz_radius.so
 
