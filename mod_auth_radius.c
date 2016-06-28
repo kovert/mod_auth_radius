@@ -1549,8 +1549,8 @@ static void register_hooks(apr_pool_t *p)
 {
 	static const char *const aszPost[] = { "mod_authz_user.c", NULL };
 
-	ap_register_provider(p, AUTHN_PROVIDER_GROUP, "radius", "0", &radius_authentication_provider);
-	ap_register_provider(p, AUTHZ_PROVIDER_GROUP, "radius", "0", &radius_authorization_provider);
+	ap_register_provider(p, AUTHN_PROVIDER_GROUP, "radius_authnz", "0", &radius_authentication_provider);
+	ap_register_provider(p, AUTHZ_PROVIDER_GROUP, "radius_authnz", "0", &radius_authorization_provider);
 
 	ap_hook_fixups(radius_fixups, NULL, NULL, APR_HOOK_FIRST);
 

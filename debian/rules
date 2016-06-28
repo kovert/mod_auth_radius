@@ -33,8 +33,8 @@ install: build
 	dh_prep
 	dh_installdirs
 	dh_installdirs usr/lib/apache2/modules etc/apache2/mods-available
-	cp -a debian/auth_radius.load $(tmp)/etc/apache2/mods-available/auth_radius.load
-	install -p -m 644 .libs/mod_auth_radius.so $(tmp)/usr/lib/apache2/modules/mod_auth_radius.so
+	cp -a debian/auth_radius.load $(tmp)/etc/apache2/mods-available/authnz_radius.load
+	install -p -m 644 .libs/mod_auth_radius.so $(tmp)/usr/lib/apache2/modules/mod_authnz_radius.so
 
 binary-indep:
 	#nothing to do
