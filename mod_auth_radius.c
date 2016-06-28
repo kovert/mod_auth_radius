@@ -1238,13 +1238,12 @@ static int authorize_only_check(request_rec *r,
 		cookie = cookie_alloc(r, expires, NULL, NULL);
 
 		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes",
-		     	r->user, NULL, min);
+		     	r->user, "--none--", min);
 	
 		RADLOG_DEBUG(r->server, "Adding %s cookie %s", authz_cookie_name, cookie);
 
 		cookie_add(r, r->headers_out, authz_cookie_name, cookie, expires);
 	}
-
 	
 	return rv;
 }
