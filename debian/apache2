@@ -1,2 +1,2 @@
-mod debian/auth_radius.load
-mod .libs/mod_auth_radius.so
+mod debian/authnz_radius.load
+mod .libs/mod_authnz_radius.so

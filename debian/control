@@ -1,4 +1,4 @@
-Source: libapache2-mod-auth-radius
+Source: libapache2-mod-authnz-radius
 Maintainer: Jorge Pereira <jpereiran@gmail.com>
 Section: web
 Priority: optional
@@ -6,7 +6,7 @@ Standards-Version: 3.9.6
 Build-Depends: debhelper (>= 9), apache2-dev | apache2-threaded-dev, libssl-dev
 Homepage: http://www.freeradius.org/
 
-Package: libapache2-mod-auth-radius
+Package: libapache2-mod-authnz-radius
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Suggests: freeradius-server, freeradius-utils, apache2

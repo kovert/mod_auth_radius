@@ -1,17 +1,17 @@
 #!/usr/bin/make -f
-#export DH_VERBOSE=1
-tmp := $(CURDIR)/debian/libapache2-mod-auth-radius
+# export DH_VERBOSE=1
+tmp := debian/libapache2-mod-authnz-radius
 
 %:
 	dh $@
 
-patch:
+#patch:
 #	if [ ! -f patch-stamp ]; then \
 #	 patch -p1 < debian/patches/something.diff && \
 #	 touch patch-stamp; \
 #	fi
 
-unpatch:
+#unpatch:
 #	if [ -f patch-stamp ]; then \
 #	 patch -Rp1 < debian/patches/something.diff && \
 #	 rm -f patch-stamp; \
@@ -26,5 +26,4 @@ override_dh_auto_install:
 	mkdir -p $(tmp)/usr/lib/apache2/modules $(tmp)/etc/apache2/mods-available
 	cp -a debian/auth_radius.load $(tmp)/etc/apache2/mods-available/authnz_radius.load
 	install -p -m 644 .libs/mod_auth_radius.so $(tmp)/usr/lib/apache2/modules/mod_authnz_radius.so
-
 
