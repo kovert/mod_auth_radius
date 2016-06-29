@@ -297,6 +297,8 @@ typedef struct radius_dir_config_rec {
 	/* cookie time valid */
 	char *calling_station_id; /* custom value for specifying hardcoded calling station ID */
 	int debug_mode;   /* Dump all data talked with Radius */
+	char *deniedurl;
+	int stripat;
 	radius_fixup_redirect_t *redirects;
 } radius_dir_config_rec_t;
 
@@ -314,6 +316,9 @@ static void *radius_per_directory_config_alloc(apr_pool_t *p, char *d)
 	rec->timeout = 0;               /* let the server config decide timeouts */
 	rec->calling_station_id = NULL; /* no custom value for calling station ID yet ; use default behavior */
 	rec->debug_mode = FALSE;
+
+	rec->deniedurl = NULL;
+	rec->stripat = 0;
 
 	rec->redirects = NULL;
 
@@ -356,6 +361,9 @@ static void *radius_per_directory_config_merge(apr_pool_t *p,
 	merged_config->authoritative = new_config->authoritative;
 	merged_config->timeout = new_config->timeout;
 	merged_config->debug_mode = new_config->debug_mode;
+
+	merged_config->deniedurl = new_config->deniedurl;
+	merged_config->stripat = new_config->stripat;
 
 	return (void *)merged_config;
 }
@@ -508,6 +516,14 @@ static command_rec auth_cmds[] = {
 
 	AP_INIT_TAKE2("AuthRadiusClassRedirect", radius_class_redirect_add, NULL, OR_AUTHCFG,
 		       "Define redirects if a user has given values in class set"),
+
+	AP_INIT_TAKE1("AuthRadiusDeniedRedirect", ap_set_string_slot,
+		     (void *)APR_OFFSETOF(radius_dir_config_rec_t, deniedurl), OR_AUTHCFG,
+		     "Redirect for when Radius fails to authorize"),
+
+	AP_INIT_FLAG("AuthRadiusStripAt", ap_set_flag_slot,
+		      (void *)APR_OFFSETOF(radius_dir_config_rec_t, stripat), OR_AUTHCFG,
+		      "Remove everything after an @ sign before checking"),
 
 	{ NULL }
 };
@@ -754,8 +770,6 @@ static void radius_squirrel_classes(request_rec *r,
 	do {
 		if (attr->length < 2)
 			continue;
-		if ((len -= attr->length) <= 0)
-			break;
 		newcl = apr_pcalloc(r->pool, attr->length + 10);
 		newcl->class = apr_pstrndup(r->pool, (char *)attr->data, attr->length - 2);
 		newcl->next = NULL;
@@ -765,6 +779,7 @@ static void radius_squirrel_classes(request_rec *r,
 			pnote->classes = newcl;
 		}
 		cl = newcl;
+		len -= attr->length;
 		attr = (attribute_t *)((char *)attr + attr->length);
 	} while(len > 0);
 }
@@ -776,7 +791,7 @@ static int radius_authenticate(request_rec *r,
 			       int sockfd,
 			       int code,
 			       char *recv_buffer,
-			       const char *user,
+			       const char *in_user,
 			       const char *passwd_in,
 			       const char *state,
 			       uint8_t *vector,
@@ -792,6 +807,7 @@ static int radius_authenticate(request_rec *r,
 	int rcode = -1;
 	struct in_addr *ip_addr;
 	radius_perreq_notes_t *pnote;
+	char *user;
 
 	uint8_t misc[RADIUS_RANDOM_VECTOR_LEN];
 	int password_len, i;
@@ -804,6 +820,14 @@ static int radius_authenticate(request_rec *r,
 	radius_dir_config_rec_t *rec;
 
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
+
+	user = apr_pstrdup(r->pool, in_user);
+	if(rec->stripat ) {
+		char *at;
+		if( (at = strchr(user, '@')) )
+			*at = '\0';
+		
+	}
 
 	if(passwd_in) {
 		i = strlen(passwd_in);
@@ -1089,7 +1113,7 @@ static int password_check(request_rec *r,
 		}
 
 	case RADIUS_ACCESS_REJECT:
-		RADLOG_DEBUG(r->server, "RADIUS authentication failed for user %s", user);
+		RADLOG_DEBUG(r->server, "RADIUS authentication failed (access_reject) for user %s", user);
 		break;
 
 	case RADIUS_ACCESS_CHALLENGE: {
@@ -1166,15 +1190,16 @@ static int authorize_only_check(request_rec *r,
 		RADLOG_DEBUG(r->server, "Found cookie=%s for user=%s : ", cookie, r->user);
 
 		if (cookie_validate(r, cookie, NULL)) {
-			RADLOG_DEBUG(r->server, "still valid.  Serving page.");
+			RADLOG_DEBUG(r->server, "Authz Cookie still valid.  Serving page.");
 			return TRUE;
 		}
 	} else {
-		RADLOG_DEBUG(r->server, "No cookie found.  Trying RADIUS authentication.");
+		RADLOG_DEBUG(r->server, "No cookie found.  Trying RADIUS authorization");
 	}
 
 
 	if(pnote) {
+		RADLOG_DEBUG(r->server, "Returning cached response %d", pnote->response);
 		return pnote->response;
 	}
 
@@ -1206,15 +1231,13 @@ static int authorize_only_check(request_rec *r,
 
 	switch (packet->code) {
 	case RADIUS_ACCESS_ACCEPT: {
-		radius_squirrel_classes(r, packet, pnote);
 		*message = 0;  /* no message */
 		rv = TRUE;   /* he likes you! */
 	}
 
 	case RADIUS_ACCESS_REJECT:
-		RADLOG_DEBUG(r->server, "RADIUS authentication failed for user %s", user);
+		RADLOG_DEBUG(r->server, "RADIUS authentication failed (access_reject) for user %s", user);
 		break;
-
 	case RADIUS_ACCESS_CHALLENGE: 
 		RADLOG_DEBUG(r->server, "RADIUS challenge received for %s; not authorizing", user);
 		break;
@@ -1227,7 +1250,6 @@ static int authorize_only_check(request_rec *r,
 
 
 	pnote->response = rv;
-	ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 
 	if(rv == TRUE ) {
 		time_t expires;
@@ -1240,10 +1262,18 @@ static int authorize_only_check(request_rec *r,
 		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes",
 		     	r->user, "--none--", min);
 	
-		RADLOG_DEBUG(r->server, "Adding %s cookie %s", authz_cookie_name, cookie);
-
-		cookie_add(r, r->headers_out, authz_cookie_name, cookie, expires);
+		radius_squirrel_classes(r, packet, pnote);
+		if(! pnote->classes) {
+			RADLOG_DEBUG(r->server, "Adding %s cookie %s", authz_cookie_name, cookie);
+			cookie_add(r, r->headers_out, authz_cookie_name, cookie, expires);
+		}
+		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes. Classes: %p",
+	     		r->user, "--none--", min, pnote->classes);
+	} else {
+		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s FAILED",
+	     		r->user, "--none--");
 	}
+	ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 	
 	return rv;
 }
@@ -1434,21 +1464,33 @@ static authz_status radius_authz(request_rec *r, const char *require_line, const
 	char errstr[MAX_STRING_LEN];
 	char message[256];
 
+	RADLOG_DEBUG(r->server, "radius_authz check called");
+
 	if(!r->user) {
+		RADLOG_DEBUG(r->server, "radius_authz denied no user");
 		return AUTHZ_DENIED_NO_USER;
 	}
 
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 	if(!rec->authz_state) {
+		RADLOG_DEBUG(r->server, "declining radius_authz");
 		return DECLINED;
 	}
 
 	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
 	if(authorize_only_check(r, scr, r->user, message, errstr) == TRUE) {
+		RADLOG_DEBUG(r->server, "granting access");
 		return AUTHZ_GRANTED;
 	} else {
-		return AUTHZ_DENIED;
+		if(! rec->deniedurl) {
+			RADLOG_DEBUG(r->server, "denying access");
+			return AUTHZ_DENIED;
+		} else {
+			RADLOG_DEBUG(r->server, "declining authz so fixup can redirect");
+			return DECLINED;
+		}
 	}
+	RADLOG_DEBUG(r->server, "Code that should never be reached was reached");
 }
 
 static void check_redirect_classes(request_rec *r) {
@@ -1461,15 +1503,18 @@ static void check_redirect_classes(request_rec *r) {
 	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 
 	if(!rec) {
+		RADLOG_DEBUG(r->server, "++  no per-dir rec");
 		return;
 	}
 
 	if(!pnote) {
+		RADLOG_DEBUG(r->server, "++  no pnote, skipping");
 		return;
 	}
 
 	for(redir = rec->redirects; redir; redir = redir->next) {
 		for(class = pnote->classes; class; class = class->next) {
+			RADLOG_DEBUG(r->server, "++  comparing %s and %s for authz redirect", class->class, redir->class);
 			if(strcmp(class->class, redir->class) == 0) {
 				apr_table_set(r->headers_out, "Location", redir->redirect);
 				r->status = HTTP_TEMPORARY_REDIRECT;
@@ -1487,7 +1532,9 @@ static apr_status_t radius_fixups(request_rec *r) {
 	radius_server_config_rec_t *scr;
 	char errstr[MAX_STRING_LEN];
 	char message[256];
+	int rv;
 
+	RADLOG_DEBUG(r->server, "Entering radius fixups");
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 
 	if(! r->user) {
@@ -1498,10 +1545,22 @@ static apr_status_t radius_fixups(request_rec *r) {
 		return DECLINED;
 	}
 
+	RADLOG_DEBUG(r->server, "Considering radius fixups");
 	message[0] = '\0';
 	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
-	authorize_only_check(r, scr, r->user, message, errstr);
+	rv = authorize_only_check(r, scr, r->user, message, errstr);
 
+	if(!rv) {
+		if(rec->deniedurl) {
+			apr_table_set(r->headers_out, "Location", rec->deniedurl);
+			r->status = HTTP_TEMPORARY_REDIRECT;
+			return OK;
+		} else {
+			return OK;
+		}
+	}
+
+	RADLOG_DEBUG(r->server, "Checking for redirect classes");
 	check_redirect_classes(r);
 
 	return OK;
