@@ -1,1 +1,1 @@
-LoadModule radius_auth_module /usr/lib/apache2/modules/mod_auth_radius.so
+LoadModule radius_authnz_module /usr/lib/apache2/modules/mod_authnz_radius.so

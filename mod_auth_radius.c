@@ -153,7 +153,7 @@ static const char *authz_cookie_name = "RADIUSZ";
 
 #define COOKIE_SIZE                   1024
 
-module AP_MODULE_DECLARE_DATA radius_auth_module;
+module AP_MODULE_DECLARE_DATA radius_authnz_module;
 
 /* per-server configuration structure */
 typedef struct radius_server_config_rec_s {
@@ -402,7 +402,7 @@ static const char *radius_server_add(cmd_parms *cmd,
 	uint16_t port;
 	char *p;
 
-	scr = ap_get_module_config(cmd->server->module_config, &radius_auth_module);
+	scr = ap_get_module_config(cmd->server->module_config, &radius_authnz_module);
 
 	/* allocate and look up the RADIUS server's IP address */
 	scr->radius_ip = (struct in_addr *)apr_pcalloc(cmd->pool, sizeof(struct in_addr));
@@ -445,7 +445,7 @@ static const char *bind_address_set(cmd_parms *cmd,
 	radius_server_config_rec_t *scr;
 	struct in_addr *a;
 
-	scr = ap_get_module_config(cmd->server->module_config, &radius_auth_module);
+	scr = ap_get_module_config(cmd->server->module_config, &radius_authnz_module);
 
 	if ((a = ip_addr_get(cmd->pool, arg)) == NULL) return "AuthRadiusBindAddress: Invalid IP address";
 	scr->bind_address = a->s_addr;
@@ -462,7 +462,7 @@ static const char *cookie_set_timeout(cmd_parms *cmd,
 {
 	radius_server_config_rec_t *scr;
 
-	scr = ap_get_module_config(cmd->server->module_config, &radius_auth_module);
+	scr = ap_get_module_config(cmd->server->module_config, &radius_authnz_module);
 	scr->timeout = atoi(arg);
 
 	return NULL;
@@ -532,7 +532,7 @@ static int packet_verify(request_rec *r,
 	uint8_t calculated[RADIUS_RANDOM_VECTOR_LEN];
 	uint8_t reply[RADIUS_RANDOM_VECTOR_LEN];
 
-	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_auth_module);
+	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_authnz_module);
 
 	/*
 	 * We could dispense with the memcpy, and do MD5's of the packet
@@ -590,8 +590,8 @@ static char *cookie_alloc(request_rec *r,
 	}
 
 	cookie = apr_pcalloc(r->pool, COOKIE_SIZE);
-	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_auth_module);
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_authnz_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 
 	if ((hostname = ap_get_remote_host(c, r->per_dir_config, REMOTE_NAME, NULL)) == NULL)
 		hostname = "www.example.com";
@@ -803,7 +803,7 @@ static int radius_authenticate(request_rec *r,
 	radius_packet_t *packet = (radius_packet_t *)send_buffer;
 	radius_dir_config_rec_t *rec;
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 
 	if(passwd_in) {
 		i = strlen(passwd_in);
@@ -1076,12 +1076,12 @@ static int password_check(request_rec *r,
 		 	 * used for future authz calls; its not done earlier because
 			 * it does not do password auth.
 		 	 */
-			pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+			pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 			if(!pnote) {
 				pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
 				radius_squirrel_classes(r, packet, pnote);
 				pnote->response = TRUE;
-				ap_set_module_config(r->request_config, &radius_auth_module, pnote);
+				ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 			}
 
 			*message = 0;  /* no message */
@@ -1158,8 +1158,8 @@ static int authorize_only_check(request_rec *r,
 	int rv = FALSE;
 	char *cookie;
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
-	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
+	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 
 	/* check for the existence of a cookie: assume authorized if so */
 	if ((cookie = cookie_from_request(r, authz_cookie_name)) != NULL) {
@@ -1227,7 +1227,7 @@ static int authorize_only_check(request_rec *r,
 
 
 	pnote->response = rv;
-	ap_set_module_config(r->request_config, &radius_auth_module, pnote);
+	ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 
 	if(rv == TRUE ) {
 		time_t expires;
@@ -1293,8 +1293,8 @@ int basic_authentication_common(request_rec *r,
 	time_t expires;
 	//struct stat buf;
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
-	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
+	scr = (radius_server_config_rec_t *)ap_get_module_config(s->module_config, &radius_authnz_module);
 
 	/* not active here, just decline */
 	if (!rec->active) return DECLINED;
@@ -1438,12 +1438,12 @@ static authz_status radius_authz(request_rec *r, const char *require_line, const
 		return AUTHZ_DENIED_NO_USER;
 	}
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 	if(!rec->authz_state) {
 		return DECLINED;
 	}
 
-	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_auth_module);
+	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
 	if(authorize_only_check(r, scr, r->user, message, errstr) == TRUE) {
 		return AUTHZ_GRANTED;
 	} else {
@@ -1457,8 +1457,8 @@ static void check_redirect_classes(request_rec *r) {
 	radius_class_list_t *class;
 	radius_fixup_redirect_t *redir;
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
-	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
+	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 
 	if(!rec) {
 		return;
@@ -1488,7 +1488,7 @@ static apr_status_t radius_fixups(request_rec *r) {
 	char errstr[MAX_STRING_LEN];
 	char message[256];
 
-	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_auth_module);
+	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 
 	if(! r->user) {
 		return DECLINED;
@@ -1499,7 +1499,7 @@ static apr_status_t radius_fixups(request_rec *r) {
 	}
 
 	message[0] = '\0';
-	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_auth_module);
+	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
 	authorize_only_check(r, scr, r->user, message, errstr);
 
 	check_redirect_classes(r);
@@ -1562,7 +1562,7 @@ static void register_hooks(apr_pool_t *p)
 #endif
 }
 
-module AP_MODULE_DECLARE_DATA radius_auth_module = {
+module AP_MODULE_DECLARE_DATA radius_authnz_module = {
 	STANDARD20_MODULE_STUFF,
 	radius_per_directory_config_alloc,	/* dir config creater */
 	radius_per_directory_config_merge,	/* dir merger --- default is to override */
