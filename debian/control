@@ -9,6 +9,7 @@ Homepage: http://www.freeradius.org/
 Package: libapache2-mod-authnz-radius
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Conflicts: libapache2-mod-auth-radius
 Suggests: freeradius-server, freeradius-utils, apache2
 Description: Apache 2.x module for RADIUS authentication
  mod_auth_radius is an Apache 2.x module for authenticating users
