@@ -1516,6 +1516,7 @@ static void check_redirect_classes(request_rec *r) {
 		for(class = pnote->classes; class; class = class->next) {
 			RADLOG_DEBUG(r->server, "++  comparing %s and %s for authz redirect", class->class, redir->class);
 			if(strcmp(class->class, redir->class) == 0) {
+				RADLOG_DEBUG(r->server, "Redirecting for '%s' to '%s'", redir->class, redir->redirect);
 				apr_table_set(r->headers_out, "Location", redir->redirect);
 				r->status = HTTP_TEMPORARY_REDIRECT;
 				goto done;
