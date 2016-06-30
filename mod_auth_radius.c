@@ -1486,7 +1486,7 @@ static authz_status radius_authz(request_rec *r, const char *require_line, const
 	RADLOG_DEBUG(r->server, "Code that should never be reached was reached");
 }
 
-static void check_redirect_classes(request_rec *r) {
+static apr_status_t check_redirect_classes(request_rec *r) {
 	radius_dir_config_rec_t *rec;
 	radius_perreq_notes_t *pnote;
 	radius_class_list_t *class;
@@ -1496,11 +1496,11 @@ static void check_redirect_classes(request_rec *r) {
 	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 
 	if(!rec) {
-		return;
+		return DECLINED;
 	}
 
 	if(!pnote) {
-		return;
+		return DECLINED;
 	}
 
 	for(redir = rec->redirects; redir; redir = redir->next) {
@@ -1515,7 +1515,7 @@ static void check_redirect_classes(request_rec *r) {
 	}
 
 done:
-	return;
+	return HTTP_TEMPORARY_REDIRECT;
 }
 
 static apr_status_t radius_fixups(request_rec *r) {
@@ -1551,9 +1551,7 @@ static apr_status_t radius_fixups(request_rec *r) {
 	}
 
 	RADLOG_DEBUG(r->server, "Checking for redirect classes");
-	check_redirect_classes(r);
-
-	return OK;
+	return check_redirect_classes(r);
 }
 
 static const authn_provider radius_authentication_provider = {
