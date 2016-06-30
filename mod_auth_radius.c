@@ -1491,6 +1491,7 @@ static apr_status_t check_redirect_classes(request_rec *r) {
 	radius_perreq_notes_t *pnote;
 	radius_class_list_t *class;
 	radius_fixup_redirect_t *redir;
+	apr_status_t rv = OK;
 
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
@@ -1508,14 +1509,14 @@ static apr_status_t check_redirect_classes(request_rec *r) {
 			if(strcmp(class->class, redir->class) == 0) {
 				RADLOG_DEBUG(r->server, "Redirecting for '%s' to '%s'", redir->class, redir->redirect);
 				apr_table_set(r->headers_out, "Location", redir->redirect);
-				r->status = HTTP_TEMPORARY_REDIRECT;
+				rv = r->status = HTTP_TEMPORARY_REDIRECT;
 				goto done;
 			}
 		}
 	}
 
 done:
-	return HTTP_TEMPORARY_REDIRECT;
+	return rv;
 }
 
 static apr_status_t radius_fixups(request_rec *r) {
