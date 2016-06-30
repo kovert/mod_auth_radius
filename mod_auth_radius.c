@@ -1464,29 +1464,22 @@ static authz_status radius_authz(request_rec *r, const char *require_line, const
 	char errstr[MAX_STRING_LEN];
 	char message[256];
 
-	RADLOG_DEBUG(r->server, "radius_authz check called");
-
 	if(!r->user) {
-		RADLOG_DEBUG(r->server, "radius_authz denied no user");
 		return AUTHZ_DENIED_NO_USER;
 	}
 
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 	if(!rec->authz_state) {
-		RADLOG_DEBUG(r->server, "declining radius_authz");
 		return DECLINED;
 	}
 
 	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
 	if(authorize_only_check(r, scr, r->user, message, errstr) == TRUE) {
-		RADLOG_DEBUG(r->server, "granting access");
 		return AUTHZ_GRANTED;
 	} else {
 		if(! rec->deniedurl) {
-			RADLOG_DEBUG(r->server, "denying access");
 			return AUTHZ_DENIED;
 		} else {
-			RADLOG_DEBUG(r->server, "declining authz so fixup can redirect");
 			return DECLINED;
 		}
 	}
@@ -1503,18 +1496,15 @@ static void check_redirect_classes(request_rec *r) {
 	pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
 
 	if(!rec) {
-		RADLOG_DEBUG(r->server, "++  no per-dir rec");
 		return;
 	}
 
 	if(!pnote) {
-		RADLOG_DEBUG(r->server, "++  no pnote, skipping");
 		return;
 	}
 
 	for(redir = rec->redirects; redir; redir = redir->next) {
 		for(class = pnote->classes; class; class = class->next) {
-			RADLOG_DEBUG(r->server, "++  comparing %s and %s for authz redirect", class->class, redir->class);
 			if(strcmp(class->class, redir->class) == 0) {
 				RADLOG_DEBUG(r->server, "Redirecting for '%s' to '%s'", redir->class, redir->redirect);
 				apr_table_set(r->headers_out, "Location", redir->redirect);
@@ -1535,7 +1525,6 @@ static apr_status_t radius_fixups(request_rec *r) {
 	char message[256];
 	int rv;
 
-	RADLOG_DEBUG(r->server, "Entering radius fixups");
 	rec = (radius_dir_config_rec_t *)ap_get_module_config(r->per_dir_config, &radius_authnz_module);
 
 	if(! r->user) {
@@ -1546,13 +1535,13 @@ static apr_status_t radius_fixups(request_rec *r) {
 		return DECLINED;
 	}
 
-	RADLOG_DEBUG(r->server, "Considering radius fixups");
 	message[0] = '\0';
 	scr = (radius_server_config_rec_t *)ap_get_module_config(r->server->module_config, &radius_authnz_module);
 	rv = authorize_only_check(r, scr, r->user, message, errstr);
 
 	if(!rv) {
 		if(rec->deniedurl) {
+			RADLOG_DEBUG(r->server, "Redirecteing to deniedurl '%s'", rec->deniedurl);
 			apr_table_set(r->headers_out, "Location", rec->deniedurl);
 			r->status = HTTP_TEMPORARY_REDIRECT;
 			return OK;
