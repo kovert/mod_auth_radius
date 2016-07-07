@@ -274,6 +274,7 @@ typedef struct radius_class_list {
 } radius_class_list_t;
 
 typedef struct radius_perreq_notes {
+	char 	*user;
 	int	response;
 	struct radius_class_list *classes;
 } radius_perreq_notes_t;
@@ -764,9 +765,6 @@ static void radius_squirrel_classes(request_rec *r,
 {
 	radius_class_list_t *newcl, *cl;
 
-	/* don't actually do anything to see if this was causing leakage */
-	return;
-
 	/* some overlap from attribute_find_by_num */
 	attribute_t *attr = &packet->first;
 	int len = ntohs(packet->length) - RADIUS_HEADER_LEN;
@@ -1104,8 +1102,16 @@ static int password_check(request_rec *r,
 			 * it does not do password auth.
 		 	 */
 			pnote = (radius_perreq_notes_t *)ap_get_module_config(r->request_config, &radius_authnz_module);
+			if(pnote) {
+				if(strncmp(pnote->user, user, strlen(pnote->user))!=0) {
+					RADLOG_WARN(r->server, "User mismatch, ignoring %s vs %s",
+						pnote->user, user);
+					pnote = NULL;
+				}
+			}
 			if(!pnote) {
 				pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+				pnote->user = apr_pstrdup(r->pool, user);
 				radius_squirrel_classes(r, packet, pnote);
 				pnote->response = TRUE;
 				ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
@@ -1200,6 +1206,14 @@ static int authorize_only_check(request_rec *r,
 		RADLOG_DEBUG(r->server, "No cookie found.  Trying RADIUS authorization");
 	}
 
+	if(pnote) {
+		if(strncmp(pnote->user, user, strlen(pnote->user))!=0) {
+			RADLOG_WARN(r->server, "User mismatch, ignoring %s vs %s",
+				pnote->user, user);
+			pnote = NULL;
+		}
+	}
+
 
 	if(pnote) {
 		RADLOG_DEBUG(r->server, "Returning cached response %d", pnote->response);
@@ -1231,6 +1245,7 @@ static int authorize_only_check(request_rec *r,
 
 	/* we got this far, we'll need the pnote */
 	pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+	pnote->user = apr_pstrdup(r->pool, user);
 
 	switch (packet->code) {
 	case RADIUS_ACCESS_ACCEPT: {

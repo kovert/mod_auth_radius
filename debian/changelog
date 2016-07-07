@@ -1,8 +1,15 @@
+libapache2-mod-authnz-radius (1.6.1+git+kovert2) unstable; urgency=medium
+
+  * cache usernames in pnotes
+
+ -- Todd Kover <kovert@omniscient.com>  Thu,  7 Jul 2016 19:28:00 -0400
+
 libapache2-mod-authnz-radius (1.6.1+git+kovert1) unstable; urgency=medium
 
   * do not attempt to cache data across the request
 
  -- Todd Kover <kovert@omniscient.com>  Thu,  7 Jul 2016 18:43:00 -0400
+
 
 libapache2-mod-authnz-radius (1.6.1+git+kovert0) unstable; urgency=medium
 
