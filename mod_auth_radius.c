@@ -764,6 +764,9 @@ static void radius_squirrel_classes(request_rec *r,
 {
 	radius_class_list_t *newcl, *cl;
 
+	/* don't actually do anything to see if this was causing leakage */
+	return;
+
 	/* some overlap from attribute_find_by_num */
 	attribute_t *attr = &packet->first;
 	int len = ntohs(packet->length) - RADIUS_HEADER_LEN;
