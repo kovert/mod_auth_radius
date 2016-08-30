@@ -1,8 +1,18 @@
+libapache2-mod-authnz-radius (1.6.1+git+kovert3) unstable; urgency=medium
+
+  * check ids on responses to make sure they match
+  * fix examination of non-existant attributes
+  * init more stuff to NULL, possibly unnecessarily
+  * adjust some code paths to make more sense 
+
+ -- Todd Kover <kovert@omniscient.com>  Tue, 30 Aug 2016 17:49:22 -0400
+
 libapache2-mod-authnz-radius (1.6.1+git+kovert2) unstable; urgency=medium
 
   * cache usernames in pnotes
 
  -- Todd Kover <kovert@omniscient.com>  Thu,  7 Jul 2016 19:28:00 -0400
+
 
 libapache2-mod-authnz-radius (1.6.1+git+kovert1) unstable; urgency=medium
 

@@ -763,18 +763,22 @@ static void radius_squirrel_classes(request_rec *r,
 	radius_packet_t *packet,
 	radius_perreq_notes_t *pnote)
 {
-	radius_class_list_t *newcl, *cl;
+	radius_class_list_t *newcl, *cl = NULL;
 
 	/* some overlap from attribute_find_by_num */
 	attribute_t *attr = &packet->first;
 	int len = ntohs(packet->length) - RADIUS_HEADER_LEN;
-	do {
-		if (attr->length < 2)
-			continue;
+	while(len > 0) {
+		if (attr->length < 2) {
+			break;
+		}
 		newcl = apr_pcalloc(r->pool, attr->length + 10);
 		newcl->class = apr_pstrndup(r->pool, (char *)attr->data, attr->length - 2);
 		newcl->next = NULL;
 		if(pnote->classes) {
+			if(!cl) {
+				RADLOG_DEBUG(r->server, "DANGER DANGER:  cl called when not used");
+			}
 			cl->next = newcl;
 		} else {
 			pnote->classes = newcl;
@@ -782,7 +786,7 @@ static void radius_squirrel_classes(request_rec *r,
 		cl = newcl;
 		len -= attr->length;
 		attr = (attribute_t *)((char *)attr + attr->length);
-	} while(len > 0);
+	}
 }
 
 
@@ -809,6 +813,7 @@ static int radius_authenticate(request_rec *r,
 	struct in_addr *ip_addr;
 	radius_perreq_notes_t *pnote;
 	char *user;
+	uint8_t origid;
 
 	uint8_t misc[RADIUS_RANDOM_VECTOR_LEN];
 	int password_len, i;
@@ -851,7 +856,7 @@ static int radius_authenticate(request_rec *r,
 	memset(send_buffer, 0, sizeof(send_buffer));
 
 	packet->code = code;
-	packet->id = vector[0];    /* make a random request id */
+	packet->id = origid = vector[0];    /* make a random request id */
 	packet->length = RADIUS_HEADER_LEN;
 	memcpy(packet->vector, vector, RADIUS_RANDOM_VECTOR_LEN);
 
@@ -989,6 +994,13 @@ static int radius_authenticate(request_rec *r,
 	}
 
 	packet = (radius_packet_t *)recv_buffer; /* we have a new packet */
+
+	if(origid != packet->id) {
+		RADLOG_DEBUG(r->server, "RADIUS packet id mismatch: %d v %d",
+			packet->id, origid);
+		return FALSE;
+	}
+
 	if ((ntohs(packet->length) > total_length) ||
 	    (ntohs(packet->length) > RADIUS_PACKET_RECV_SIZE)) {
 		RADLOG_DEBUG(r->server, "RADIUS packet corrupted");
@@ -1000,7 +1012,6 @@ static int radius_authenticate(request_rec *r,
 		RADLOG_WARN(r->server, "RADIUS packet fails verification");
 		return FALSE;
 	}
-
 	return TRUE;
 }
 
@@ -1111,6 +1122,7 @@ static int password_check(request_rec *r,
 			}
 			if(!pnote) {
 				pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+				pnote->classes = NULL;
 				pnote->user = apr_pstrdup(r->pool, user);
 				radius_squirrel_classes(r, packet, pnote);
 				pnote->response = TRUE;
@@ -1214,9 +1226,9 @@ static int authorize_only_check(request_rec *r,
 		}
 	}
 
-
 	if(pnote) {
-		RADLOG_DEBUG(r->server, "Returning cached response %d", pnote->response);
+		RADLOG_DEBUG(r->server, "Returning cached response %s %d %lu",
+			pnote->user, pnote->response, (unsigned long)pnote->classes);
 		return pnote->response;
 	}
 
@@ -1243,14 +1255,11 @@ static int authorize_only_check(request_rec *r,
 		return FALSE;        /* error out */
 	}
 
-	/* we got this far, we'll need the pnote */
-	pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
-	pnote->user = apr_pstrdup(r->pool, user);
-
 	switch (packet->code) {
 	case RADIUS_ACCESS_ACCEPT: {
 		*message = 0;  /* no message */
 		rv = TRUE;   /* he likes you! */
+		break;
 	}
 
 	case RADIUS_ACCESS_REJECT:
@@ -1266,7 +1275,10 @@ static int authorize_only_check(request_rec *r,
 		break;
 	}
 
-
+	/* we got this far, we'll need the pnote */
+	pnote = apr_pcalloc(r->pool, sizeof(radius_perreq_notes_t));
+	pnote->user = apr_pstrdup(r->pool, user);
+	pnote->classes = NULL;
 	pnote->response = rv;
 
 	if(rv == TRUE ) {
@@ -1285,13 +1297,13 @@ static int authorize_only_check(request_rec *r,
 			RADLOG_DEBUG(r->server, "Adding %s cookie %s", authz_cookie_name, cookie);
 			cookie_add(r, r->headers_out, authz_cookie_name, cookie, expires);
 		}
-		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes. Classes: %p",
-	     		r->user, "--none--", min, pnote->classes);
+		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s OK.  Cookie expiry in %d minutes. Classes: %lu",
+			r->user, "--none--", min, (unsigned long)pnote->classes);
+		ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 	} else {
 		RADLOG_DEBUG(r->server, "RADIUS Authentication for user=%s password=%s FAILED",
 	     		r->user, "--none--");
 	}
-	ap_set_module_config(r->request_config, &radius_authnz_module, pnote);
 	
 	return rv;
 }
